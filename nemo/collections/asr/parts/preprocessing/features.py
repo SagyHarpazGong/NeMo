@@ -52,7 +52,6 @@ try:
 except ModuleNotFoundError:
     HAVE_TORCHAUDIO = False
 
-
 CONSTANT = 1e-5
 
 
@@ -129,7 +128,7 @@ def splice_frames(x, frame_splicing):
 
 @torch.jit.script_if_tracing
 def make_seq_mask_like(
-    lengths: torch.Tensor, like: torch.Tensor, time_dim: int = -1, valid_ones: bool = True
+        lengths: torch.Tensor, like: torch.Tensor, time_dim: int = -1, valid_ones: bool = True
 ) -> torch.Tensor:
     """
 
@@ -170,18 +169,18 @@ class WaveformFeaturizer(object):
         return self.augmentor.max_augmentation_length(length)
 
     def process(
-        self,
-        file_path,
-        offset=0,
-        duration=0,
-        trim=False,
-        trim_ref=np.max,
-        trim_top_db=60,
-        trim_frame_length=2048,
-        trim_hop_length=512,
-        orig_sr=None,
-        channel_selector=None,
-        normalize_db=None,
+            self,
+            file_path,
+            offset=0,
+            duration=0,
+            trim=False,
+            trim_ref=np.max,
+            trim_top_db=60,
+            trim_frame_length=2048,
+            trim_hop_length=512,
+            orig_sr=None,
+            channel_selector=None,
+            normalize_db=None,
     ):
         audio = AudioSegment.from_file(
             file_path,
@@ -232,34 +231,34 @@ class FilterbankFeatures(nn.Module):
     """
 
     def __init__(
-        self,
-        sample_rate=16000,
-        n_window_size=320,
-        n_window_stride=160,
-        window="hann",
-        normalize="per_feature",
-        n_fft=None,
-        preemph=0.97,
-        nfilt=64,
-        lowfreq=0,
-        highfreq=None,
-        log=True,
-        log_zero_guard_type="add",
-        log_zero_guard_value=2 ** -24,
-        dither=CONSTANT,
-        pad_to=16,
-        max_duration=16.7,
-        frame_splicing=1,
-        exact_pad=False,
-        pad_value=0,
-        mag_power=2.0,
-        use_grads=False,
-        rng=None,
-        nb_augmentation_prob=0.0,
-        nb_max_freq=4000,
-        mel_norm="slaney",
-        stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
-        stft_conv=False,  # Deprecated arguments; kept for config compatibility
+            self,
+            sample_rate=16000,
+            n_window_size=320,
+            n_window_stride=160,
+            window="hann",
+            normalize="per_feature",
+            n_fft=None,
+            preemph=0.97,
+            nfilt=64,
+            lowfreq=0,
+            highfreq=None,
+            log=True,
+            log_zero_guard_type="add",
+            log_zero_guard_value=2 ** -24,
+            dither=CONSTANT,
+            pad_to=16,
+            max_duration=16.7,
+            frame_splicing=1,
+            exact_pad=False,
+            pad_value=0,
+            mag_power=2.0,
+            use_grads=False,
+            rng=None,
+            nb_augmentation_prob=0.0,
+            nb_max_freq=4000,
+            mel_norm="slaney",
+            stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
+            stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
         super().__init__()
         if stft_conv or stft_exact_pad:
@@ -275,12 +274,12 @@ class FilterbankFeatures(nn.Module):
             )
         self.log_zero_guard_value = log_zero_guard_value
         if (
-            n_window_size is None
-            or n_window_stride is None
-            or not isinstance(n_window_size, int)
-            or not isinstance(n_window_stride, int)
-            or n_window_size <= 0
-            or n_window_stride <= 0
+                n_window_size is None
+                or n_window_stride is None
+                or not isinstance(n_window_size, int)
+                or not isinstance(n_window_stride, int)
+                or n_window_size <= 0
+                or n_window_stride <= 0
         ):
             raise ValueError(
                 f"{self} got an invalid value for either n_window_size or "
@@ -305,15 +304,7 @@ class FilterbankFeatures(nn.Module):
         window_fn = torch_windows.get(window, None)
         window_tensor = window_fn(self.win_length, periodic=False) if window_fn else None
         self.register_buffer("window", window_tensor)
-        self.stft = lambda x: torch.stft(
-            x,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-            center=False if exact_pad else True,
-            window=self.window.to(dtype=torch.float),
-            return_complex=True,
-        )
+        self.exact_pad = exact_pad
 
         self.normalize = normalize
         self.log = log
@@ -415,7 +406,15 @@ class FilterbankFeatures(nn.Module):
 
         # disable autocast to get full range of stft values
         with torch.cuda.amp.autocast(enabled=False):
-            x = self.stft(x)
+            x = torch.stft(
+                x,
+                n_fft=self.n_fft,
+                hop_length=self.hop_length,
+                win_length=self.win_length,
+                center=False if exact_pad else True,
+                window=self.window.to(dtype=torch.float),
+                return_complex=True,
+            )
 
         # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
         # guard is needed for sqrt if grads are passed through
@@ -426,7 +425,7 @@ class FilterbankFeatures(nn.Module):
         if self.training and self.nb_augmentation_prob > 0.0:
             for idx in range(x.shape[0]):
                 if self._rng.random() < self.nb_augmentation_prob:
-                    x[idx, self._nb_max_fft_bin :, :] = 0.0
+                    x[idx, self._nb_max_fft_bin:, :] = 0.0
 
         # get power spectrum
         if self.mag_power != 1.0:
@@ -480,35 +479,35 @@ class FilterbankFeaturesTA(nn.Module):
     """
 
     def __init__(
-        self,
-        sample_rate: int = 16000,
-        n_window_size: int = 320,
-        n_window_stride: int = 160,
-        normalize: Optional[str] = "per_feature",
-        nfilt: int = 64,
-        n_fft: Optional[int] = None,
-        preemph: float = 0.97,
-        lowfreq: float = 0,
-        highfreq: Optional[float] = None,
-        log: bool = True,
-        log_zero_guard_type: str = "add",
-        log_zero_guard_value: Union[float, str] = 2 ** -24,
-        dither: float = 1e-5,
-        window: str = "hann",
-        pad_to: int = 0,
-        pad_value: float = 0.0,
-        mel_norm="slaney",
-        # Seems like no one uses these options anymore. Don't convolute the code by supporting thm.
-        use_grads: bool = False,  # Deprecated arguments; kept for config compatibility
-        max_duration: float = 16.7,  # Deprecated arguments; kept for config compatibility
-        frame_splicing: int = 1,  # Deprecated arguments; kept for config compatibility
-        exact_pad: bool = False,  # Deprecated arguments; kept for config compatibility
-        nb_augmentation_prob: float = 0.0,  # Deprecated arguments; kept for config compatibility
-        nb_max_freq: int = 4000,  # Deprecated arguments; kept for config compatibility
-        mag_power: float = 2.0,  # Deprecated arguments; kept for config compatibility
-        rng: Optional[random.Random] = None,  # Deprecated arguments; kept for config compatibility
-        stft_exact_pad: bool = False,  # Deprecated arguments; kept for config compatibility
-        stft_conv: bool = False,  # Deprecated arguments; kept for config compatibility
+            self,
+            sample_rate: int = 16000,
+            n_window_size: int = 320,
+            n_window_stride: int = 160,
+            normalize: Optional[str] = "per_feature",
+            nfilt: int = 64,
+            n_fft: Optional[int] = None,
+            preemph: float = 0.97,
+            lowfreq: float = 0,
+            highfreq: Optional[float] = None,
+            log: bool = True,
+            log_zero_guard_type: str = "add",
+            log_zero_guard_value: Union[float, str] = 2 ** -24,
+            dither: float = 1e-5,
+            window: str = "hann",
+            pad_to: int = 0,
+            pad_value: float = 0.0,
+            mel_norm="slaney",
+            # Seems like no one uses these options anymore. Don't convolute the code by supporting thm.
+            use_grads: bool = False,  # Deprecated arguments; kept for config compatibility
+            max_duration: float = 16.7,  # Deprecated arguments; kept for config compatibility
+            frame_splicing: int = 1,  # Deprecated arguments; kept for config compatibility
+            exact_pad: bool = False,  # Deprecated arguments; kept for config compatibility
+            nb_augmentation_prob: float = 0.0,  # Deprecated arguments; kept for config compatibility
+            nb_max_freq: int = 4000,  # Deprecated arguments; kept for config compatibility
+            mag_power: float = 2.0,  # Deprecated arguments; kept for config compatibility
+            rng: Optional[random.Random] = None,  # Deprecated arguments; kept for config compatibility
+            stft_exact_pad: bool = False,  # Deprecated arguments; kept for config compatibility
+            stft_conv: bool = False,  # Deprecated arguments; kept for config compatibility
     ):
         super().__init__()
         if not HAVE_TORCHAUDIO:
@@ -630,12 +629,12 @@ class FilterbankFeaturesTA(nn.Module):
             means = features.sum(dim=reduce_dim, keepdim=True).div(lengths.view(-1, 1, 1))
             stds = (
                 features.sub(means)
-                .masked_fill(mask, 0.0)
-                .pow(2.0)
-                .sum(dim=reduce_dim, keepdim=True)  # [B, D, T] -> [B, D, 1] or [B, 1, 1]
-                .div(lengths.view(-1, 1, 1) - 1)  # assume biased estimator
-                .clamp(min=guard_value)  # avoid sqrt(0)
-                .sqrt()
+                    .masked_fill(mask, 0.0)
+                    .pow(2.0)
+                    .sum(dim=reduce_dim, keepdim=True)  # [B, D, T] -> [B, D, 1] or [B, 1, 1]
+                    .div(lengths.view(-1, 1, 1) - 1)  # assume biased estimator
+                    .clamp(min=guard_value)  # avoid sqrt(0)
+                    .sqrt()
             )
             features = (features - means) / (stds + eps)
         else:
