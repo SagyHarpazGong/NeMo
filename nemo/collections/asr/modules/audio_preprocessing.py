@@ -64,6 +64,14 @@ __all__ = [
 ]
 
 
+def identity_function(input_spec):
+    return input_spec
+
+
+def return_input_spec(input_spec, length):
+    return input_spec
+
+
 class AudioPreprocessor(NeuralModule, ABC):
     """
         An interface for Neural Modules that performs audio pre-processing,
@@ -499,7 +507,7 @@ class SpectrogramAugmentation(NeuralModule):
             self.spec_cutout = SpecCutout(rect_masks=rect_masks, rect_time=rect_time, rect_freq=rect_freq, rng=rng,)
             # self.spec_cutout.to(self._device)
         else:
-            self.spec_cutout = lambda input_spec: input_spec
+            self.spec_cutout = identity_function
         if freq_masks + time_masks > 0:
             self.spec_augment = SpecAugment(
                 freq_masks=freq_masks,
@@ -510,7 +518,7 @@ class SpectrogramAugmentation(NeuralModule):
                 mask_value=mask_value,
             )
         else:
-            self.spec_augment = lambda input_spec, length: input_spec
+            self.spec_augment = return_input_spec
 
         # Check if numba is supported, and use a Numba kernel if it is
         if use_numba_spec_augment and numba_utils.numba_cuda_is_supported(__NUMBA_MINIMUM_VERSION__):
