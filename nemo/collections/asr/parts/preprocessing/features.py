@@ -340,8 +340,6 @@ class FilterbankFeatures(nn.Module):
             )
 
         self.use_grads = use_grads
-        if not use_grads:
-            self.forward = torch.no_grad()(self.forward)
         self._rng = random.Random() if rng is None else rng
         self.nb_augmentation_prob = nb_augmentation_prob
         if self.nb_augmentation_prob > 0.0:
@@ -389,85 +387,86 @@ class FilterbankFeatures(nn.Module):
         return self.fb
 
     def forward(self, x, seq_len, linear_spec=False):
-        seq_len = self.get_seq_len(seq_len.float())
+        with torch.no_grad():
+            seq_len = self.get_seq_len(seq_len.float())
 
-        if self.stft_pad_amount is not None:
-            x = torch.nn.functional.pad(
-                x.unsqueeze(1), (self.stft_pad_amount, self.stft_pad_amount), "reflect"
-            ).squeeze(1)
+            if self.stft_pad_amount is not None:
+                x = torch.nn.functional.pad(
+                    x.unsqueeze(1), (self.stft_pad_amount, self.stft_pad_amount), "reflect"
+                ).squeeze(1)
 
-        # dither (only in training mode for eval determinism)
-        if self.training and self.dither > 0:
-            x += self.dither * torch.randn_like(x)
+            # dither (only in training mode for eval determinism)
+            if self.training and self.dither > 0:
+                x += self.dither * torch.randn_like(x)
 
-        # do preemphasis
-        if self.preemph is not None:
-            x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
+            # do preemphasis
+            if self.preemph is not None:
+                x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
 
-        # disable autocast to get full range of stft values
-        with torch.cuda.amp.autocast(enabled=False):
-            x = torch.stft(
-                x,
-                n_fft=self.n_fft,
-                hop_length=self.hop_length,
-                win_length=self.win_length,
-                center=False if exact_pad else True,
-                window=self.window.to(dtype=torch.float),
-                return_complex=True,
-            )
+            # disable autocast to get full range of stft values
+            with torch.cuda.amp.autocast(enabled=False):
+                x = torch.stft(
+                    x,
+                    n_fft=self.n_fft,
+                    hop_length=self.hop_length,
+                    win_length=self.win_length,
+                    center=False if self.exact_pad else True,
+                    window=self.window.to(dtype=torch.float),
+                    return_complex=True,
+                )
 
-        # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
-        # guard is needed for sqrt if grads are passed through
-        guard = 0 if not self.use_grads else CONSTANT
-        x = torch.view_as_real(x)
-        x = torch.sqrt(x.pow(2).sum(-1) + guard)
+            # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
+            # guard is needed for sqrt if grads are passed through
+            guard = 0 if not self.use_grads else CONSTANT
+            x = torch.view_as_real(x)
+            x = torch.sqrt(x.pow(2).sum(-1) + guard)
 
-        if self.training and self.nb_augmentation_prob > 0.0:
-            for idx in range(x.shape[0]):
-                if self._rng.random() < self.nb_augmentation_prob:
-                    x[idx, self._nb_max_fft_bin:, :] = 0.0
+            if self.training and self.nb_augmentation_prob > 0.0:
+                for idx in range(x.shape[0]):
+                    if self._rng.random() < self.nb_augmentation_prob:
+                        x[idx, self._nb_max_fft_bin:, :] = 0.0
 
-        # get power spectrum
-        if self.mag_power != 1.0:
-            x = x.pow(self.mag_power)
+            # get power spectrum
+            if self.mag_power != 1.0:
+                x = x.pow(self.mag_power)
 
-        # return plain spectrogram if required
-        if linear_spec:
+            # return plain spectrogram if required
+            if linear_spec:
+                return x, seq_len
+
+            # dot with filterbank energies
+            x = torch.matmul(self.fb.to(x.dtype), x)
+            # log features if required
+            if self.log:
+                if self.log_zero_guard_type == "add":
+                    x = torch.log(x + self.log_zero_guard_value_fn(x))
+                elif self.log_zero_guard_type == "clamp":
+                    x = torch.log(torch.clamp(x, min=self.log_zero_guard_value_fn(x)))
+                else:
+                    raise ValueError("log_zero_guard_type was not understood")
+
+            # frame splicing if required
+            if self.frame_splicing > 1:
+                x = splice_frames(x, self.frame_splicing)
+
+            # normalize if required
+            if self.normalize:
+                x, _, _ = normalize_batch(x, seq_len, normalize_type=self.normalize)
+
+            # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
+            max_len = x.size(-1)
+            mask = torch.arange(max_len).to(x.device)
+            mask = mask.repeat(x.size(0), 1) >= seq_len.unsqueeze(1)
+            x = x.masked_fill(mask.unsqueeze(1).type(torch.bool).to(device=x.device), self.pad_value)
+            del mask
+            pad_to = self.pad_to
+            if pad_to == "max":
+                x = nn.functional.pad(x, (0, self.max_length - x.size(-1)), value=self.pad_value)
+            elif pad_to > 0:
+                pad_amt = x.size(-1) % pad_to
+                if pad_amt != 0:
+                    x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
             return x, seq_len
-
-        # dot with filterbank energies
-        x = torch.matmul(self.fb.to(x.dtype), x)
-        # log features if required
-        if self.log:
-            if self.log_zero_guard_type == "add":
-                x = torch.log(x + self.log_zero_guard_value_fn(x))
-            elif self.log_zero_guard_type == "clamp":
-                x = torch.log(torch.clamp(x, min=self.log_zero_guard_value_fn(x)))
-            else:
-                raise ValueError("log_zero_guard_type was not understood")
-
-        # frame splicing if required
-        if self.frame_splicing > 1:
-            x = splice_frames(x, self.frame_splicing)
-
-        # normalize if required
-        if self.normalize:
-            x, _, _ = normalize_batch(x, seq_len, normalize_type=self.normalize)
-
-        # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
-        max_len = x.size(-1)
-        mask = torch.arange(max_len).to(x.device)
-        mask = mask.repeat(x.size(0), 1) >= seq_len.unsqueeze(1)
-        x = x.masked_fill(mask.unsqueeze(1).type(torch.bool).to(device=x.device), self.pad_value)
-        del mask
-        pad_to = self.pad_to
-        if pad_to == "max":
-            x = nn.functional.pad(x, (0, self.max_length - x.size(-1)), value=self.pad_value)
-        elif pad_to > 0:
-            pad_amt = x.size(-1) % pad_to
-            if pad_amt != 0:
-                x = nn.functional.pad(x, (0, pad_to - pad_amt), value=self.pad_value)
-        return x, seq_len
 
 
 class FilterbankFeaturesTA(nn.Module):
